@@ -9,7 +9,7 @@ export async function POST(
     const { id } = await params;
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Get the reservation
+      // 1. Find reservation
       const reservation = await tx.reservation.findUnique({
         where: { id },
       });
@@ -18,27 +18,30 @@ export async function POST(
         throw new Error('NOT_FOUND');
       }
 
+      // Idempotency: already confirmed
       if (reservation.status === 'CONFIRMED') {
-        return reservation; // Already confirmed, handle idempotency
+        return reservation;
       }
 
+      // Prevent confirming released reservation
       if (reservation.status === 'RELEASED') {
         throw new Error('ALREADY_RELEASED');
       }
 
-      // 2. Check for expiry
+      // Expiry check
       if (new Date() > new Date(reservation.expiresAt)) {
         throw new Error('EXPIRED');
       }
 
-      // 3. Update reservation status
+      // Update reservation status
       const updatedReservation = await tx.reservation.update({
         where: { id },
-        data: { status: 'CONFIRMED' },
+        data: {
+          status: 'CONFIRMED',
+        },
       });
 
-      // 4. Permanently decrement stock
-      // total decreases because item is sold, reserved decreases because the hold is fulfilled
+      // Permanently decrement stock
       await tx.stock.update({
         where: {
           productId_warehouseId: {
@@ -62,16 +65,31 @@ export async function POST(
     return NextResponse.json(result);
   } catch (error: any) {
     if (error.message === 'NOT_FOUND') {
-      return NextResponse.json({ error: 'Reservation not found' }, { status: 404 });
+      return NextResponse.json(
+        { error: 'Reservation not found' },
+        { status: 404 }
+      );
     }
+
     if (error.message === 'EXPIRED') {
-      return NextResponse.json({ error: 'Reservation has expired' }, { status: 410 });
+      return NextResponse.json(
+        { error: 'Reservation has expired' },
+        { status: 410 }
+      );
     }
+
     if (error.message === 'ALREADY_RELEASED') {
-      return NextResponse.json({ error: 'Reservation was already released' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Reservation already released' },
+        { status: 400 }
+      );
     }
 
     console.error('Error confirming reservation:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+
+    return NextResponse.json(
+      { error: 'Internal Server Error' },
+      { status: 500 }
+    );
   }
 }
